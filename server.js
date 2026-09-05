@@ -7,8 +7,8 @@ const PORT = process.env.PORT || 10000;
 
 app.use(cors());
 
-// عنوان IP عراقي حقيقي تابع لمزود خدمة محلي
-const SPOOFED_IRAQI_IP = '37.236.143.15';
+// المفتاح المستخرج من حسابك في ScraperAPI
+const SCRAPER_API_KEY = '0860e46379a7cd8f860dbf5a5bb8b981';
 
 app.get('/api/get-stream', async (req, res) => {
   let id = req.query.id;
@@ -18,24 +18,17 @@ app.get('/api/get-stream', async (req, res) => {
   }
   if (!id) return res.status(400).json({ status: 'error', message: 'معرف مطلوب' });
 
-  const filesApi = `https://cee.buzz/api/android/transcoddedFiles/id/${id}`;
+  const targetApi = `https://cee.buzz/api/android/transcoddedFiles/id/${id}`;
+
+  // توجيه الطلب عبر شبكة ScraperAPI مع تحديد دولة العراق
+  const scraperUrl = `http://api.scraperapi.com?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetApi)}&country_code=iq`;
 
   try {
-    const response = await axios.get(filesApi, {
+    const response = await axios.get(scraperUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://cee.buzz/',
-        'Accept': 'application/json, text/plain, */*',
-        // حزمة ترويسات خداع السيرفر والبروكسيات العكسية
-        'X-Forwarded-For': SPOOFED_IRAQI_IP,
-        'X-Real-IP': SPOOFED_IRAQI_IP,
-        'Client-IP': SPOOFED_IRAQI_IP,
-        'X-Client-IP': SPOOFED_IRAQI_IP,
-        'CF-Connecting-IP': SPOOFED_IRAQI_IP,
-        'Fastly-Client-IP': SPOOFED_IRAQI_IP,
-        'True-Client-IP': SPOOFED_IRAQI_IP
+        'Accept': 'application/json'
       },
-      timeout: 10000
+      timeout: 35000 // مهلة كافية لكي يجد ScraperAPI أنسب IP عراقي
     });
 
     let filesData = response.data;
@@ -65,7 +58,7 @@ app.get('/api/get-stream', async (req, res) => {
     const errorDetails = err.response ? JSON.stringify(err.response.data) : err.message;
     res.status(statusCode).json({
       status: 'error',
-      message: `فشل الاتصال: ${errorDetails}`
+      message: `فشل عبر ScraperAPI: ${errorDetails}`
     });
   }
 });
