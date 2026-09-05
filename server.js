@@ -1,34 +1,14 @@
 const express = require('express');
 const axios = require('axios');
-const { SocksProxyAgent } = require('socks-proxy-agent');
+const cors = require('cors');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// أقوى وأسرع البروكسيات العراقية من الملف المرفق
-const proxyList = [
-  'http://109.224.22.36:51372',
-  'http://185.122.252.42:8080',
-  'http://212.126.96.154:8080',
-  'http://5.8.240.93:4153',
-  'http://176.241.94.228:10801',
-  'http://62.201.223.174:8186',
-  'http://5.1.104.67:33041'
-];
+app.use(cors());
 
-let currentProxyIndex = 0;
-
-function getCurrentAgent() {
-  if (proxyList.length === 0) return null;
-  const proxyUrl = proxyList[currentProxyIndex];
-  // استخدام socks-proxy-agent لدعم الاتصال
-  return new SocksProxyAgent(proxyUrl);
-}
-
-function rotateProxy() {
-  currentProxyIndex = (currentProxyIndex + 1) % proxyList.length;
-  console.log(`[Proxy Rotate] الانتقال للبروكسي التالي: ${proxyList[currentProxyIndex]}`);
-}
+// عنوان IP عراقي حقيقي تابع لمزود خدمة محلي
+const SPOOFED_IRAQI_IP = '37.236.143.15';
 
 app.get('/api/get-stream', async (req, res) => {
   let id = req.query.id;
@@ -40,43 +20,31 @@ app.get('/api/get-stream', async (req, res) => {
 
   const filesApi = `https://cee.buzz/api/android/transcoddedFiles/id/${id}`;
 
-  let attempts = 0;
-  let success = false;
-  let response;
-
-  while (attempts < proxyList.length && !success) {
-    const agent = getCurrentAgent();
-    try {
-      response = await axios.get(filesApi, {
-        headers: { 
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 
-          'Referer': 'https://cee.buzz/' 
-        },
-        httpAgent: agent, 
-        httpsAgent: agent, 
-        timeout: 5000 
-      });
-      if (response.status === 200) {
-        success = true;
-      }
-    } catch (err) {
-      attempts++;
-      rotateProxy();
-    }
-  }
-
-  if (!success) {
-    return res.status(500).json({ status: 'error', message: 'تعذر الاتصال عبر البروكسيات المتاحة حالياً.' });
-  }
-
   try {
+    const response = await axios.get(filesApi, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://cee.buzz/',
+        'Accept': 'application/json, text/plain, */*',
+        // حزمة ترويسات خداع السيرفر والبروكسيات العكسية
+        'X-Forwarded-For': SPOOFED_IRAQI_IP,
+        'X-Real-IP': SPOOFED_IRAQI_IP,
+        'Client-IP': SPOOFED_IRAQI_IP,
+        'X-Client-IP': SPOOFED_IRAQI_IP,
+        'CF-Connecting-IP': SPOOFED_IRAQI_IP,
+        'Fastly-Client-IP': SPOOFED_IRAQI_IP,
+        'True-Client-IP': SPOOFED_IRAQI_IP
+      },
+      timeout: 10000
+    });
+
     let filesData = response.data;
     if (typeof filesData === 'string') {
-      try { filesData = JSON.parse(filesData); } catch(e){}
+      try { filesData = JSON.parse(filesData); } catch (e) {}
     }
-    
+
     const list = Array.isArray(filesData) ? filesData : (filesData.videos || []);
-    if (!list.length) return res.status(404).json({ status: 'error', message: 'لا توجد ملفات فيديو' });
+    if (!list.length) return res.status(404).json({ status: 'error', message: 'لا توجد ملفات فيديو متاحة' });
 
     const qualities = list.map(item => ({
       resolution: item.resolution || 'Auto',
@@ -93,10 +61,15 @@ app.get('/api/get-stream', async (req, res) => {
     });
 
   } catch (err) {
-    res.status(500).json({ status: 'error', message: `خطأ في المعالجة: ${err.message}` });
+    const statusCode = err.response ? err.response.status : 500;
+    const errorDetails = err.response ? JSON.stringify(err.response.data) : err.message;
+    res.status(statusCode).json({
+      status: 'error',
+      message: `فشل الاتصال: ${errorDetails}`
+    });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
