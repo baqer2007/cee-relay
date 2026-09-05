@@ -10,8 +10,11 @@ function getAgent() {
   const port = process.env.PROXY_PORT;
   if (host && port) {
     const cleanHost = host.replace(/^https?:\/\//, '').replace(/\/$/, '');
-    // استخدام صيغة IP مباشرة أو رابط النفق مع المنفذ بشكل صريح
-    return new SocksProxyAgent(`socks5://${cleanHost}:${port}`);
+    // تمرير الهوست والمنفذ مباشرة بشكل صريح لتفادي مشاكل التحليل
+    return new SocksProxyAgent({
+      hostname: cleanHost,
+      port: parseInt(port)
+    });
   }
   return null;
 }
@@ -34,7 +37,6 @@ app.get('/api/get-stream', async (req, res) => {
   try {
     const filesApi = `https://cee.buzz/api/android/transcoddedFiles/id/${id}`;
     
-    // رفع المهلة إلى 30 ثانية لضمان عبور الطلب عبر نفق Termux البطيء
     const response = await axios.get(filesApi, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
