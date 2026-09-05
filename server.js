@@ -7,7 +7,7 @@ const PORT = process.env.PORT || 10000;
 
 app.use(cors());
 
-// المفتاح المستخرج من حسابك في ScraperAPI
+// المفتاح الخاص بك من ScraperAPI
 const SCRAPER_API_KEY = '0860e46379a7cd8f860dbf5a5bb8b981';
 
 app.get('/api/get-stream', async (req, res) => {
@@ -20,15 +20,15 @@ app.get('/api/get-stream', async (req, res) => {
 
   const targetApi = `https://cee.buzz/api/android/transcoddedFiles/id/${id}`;
 
-  // توجيه الطلب عبر شبكة ScraperAPI مع تحديد دولة العراق
-  const scraperUrl = `http://api.scraperapi.com?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetApi)}&country_code=iq`;
+  // طلب مباشر عبر ScraperAPI بدون تحديد country_code
+  const scraperUrl = `http://api.scraperapi.com?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(targetApi)}`;
 
   try {
     const response = await axios.get(scraperUrl, {
       headers: {
         'Accept': 'application/json'
       },
-      timeout: 35000 // مهلة كافية لكي يجد ScraperAPI أنسب IP عراقي
+      timeout: 30000
     });
 
     let filesData = response.data;
