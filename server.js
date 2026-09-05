@@ -5,19 +5,23 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// إعداد وكيل SOCKS5 مع خيارات الحفاظ على اتصال المقبس مفتوحاً لمنع ECONNRESET
 function getAgent() {
   const host = process.env.PROXY_HOST;
   const port = process.env.PROXY_PORT;
   if (host && port) {
     return new SocksProxyAgent(`socks5://${host}:${port}`, {
       keepAlive: true,
-      timeout: 30000
+      keepAliveMsecs: 1000,
+      maxSockets: 25,
+      maxFreeSockets: 10,
+      timeout: 60000
     });
   }
   return null;
 }
 
-// دالة إعادة محاولة سريعة
+// دالة إعادة محاولة سريعة وخفيفة
 async function axiosWithRetry(config, retries = 2, delay = 500) {
   for (let i = 0; i < retries; i++) {
     try {
@@ -29,7 +33,7 @@ async function axiosWithRetry(config, retries = 2, delay = 500) {
   }
 }
 
-// دالة سريعة لجلب روابط الفيديو مباشرة بدون إبطاء السيرفر
+// دالة سريعة لجلب روابط الفيديو مباشرة بدون طلبات إضافية تبطئ السيرفر
 async function fetchMediaDirectly(videoId, agent) {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -126,7 +130,7 @@ app.get('/api/stream-proxy', async (req, res) => {
   }
 });
 
-// المسار الرئيسي لتطبيق Flutter (أصبح سريعاً وفورياً)
+// المسار الرئيسي لتطبيق Flutter
 app.get('/api/get-stream', async (req, res) => {
   let id = req.query.id;
   const pageUrl = req.query.url;
