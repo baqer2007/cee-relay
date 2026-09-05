@@ -5,17 +5,19 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// إعداد وكيل SOCKS5 إذا تم تمرير المتغيرات
 function getAgent() {
   const host = process.env.PROXY_HOST;
   const port = process.env.PROXY_PORT;
   if (host && port) {
-    return new SocksProxyAgent(`socks5://${host}:${port}`);
+    return new SocksProxyAgent(`socks5://${host}:${port}`, {
+      keepAlive: true,
+      timeout: 60000
+    });
   }
   return null;
 }
 
-// 1. مسار فحص الـ IP والبلد
+// 1. فحص الاتصال بالبروكسي العراقي
 app.get('/check-ip', async (req, res) => {
   const agent = getAgent();
   try {
@@ -23,52 +25,81 @@ app.get('/check-ip', async (req, res) => {
     const response = await axios.get('http://ip-api.com/json', config);
     res.json({
       status: 'success',
-      proxy_used: agent ? `socks5://${process.env.PROXY_HOST}:${process.env.PROXY_PORT}` : 'none',
       detected_country: response.data.countryCode,
       detected_city: response.data.city,
       detected_ip: response.data.query,
       isp: response.data.isp
     });
   } catch (err) {
-    res.status(500).json({
-      status: 'failed',
-      error: `تعذر الاتصال بالبروكسي: ${err.message}`,
-      proxy: agent ? `socks5://${process.env.PROXY_HOST}:${process.env.PROXY_PORT}` : 'none'
-    });
+    res.status(500).json({ status: 'failed', error: err.message });
   }
 });
 
-// 2. مسار بث الفيديو وتمريره تلقائياً مع ترويسات المشغل
-app.get('/stream', async (req, res) => {
-  let targetUrl = req.query.url;
+// 2. دالة داخلية لجلب رابط الفيديو من المنصة تلقائياً عبر معرف المادة
+async function fetchDirectVideoUrl(videoId, agent) {
+  // محاولة جلب البيانات من واجهة API سينمانا/CEE
+  const apiUrl = `https://cinemana.shabakaty.com/api/android/video/id/${videoId}`;
+  
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Referer': 'https://cinemana.shabakaty.com/',
+    'Origin': 'https://cinemana.shabakaty.com'
+  };
 
-  if (!targetUrl) {
-    return res.status(400).send('الرجاء تزويد رابط الفيديو عبر المعامل url');
+  const response = await axios.get(apiUrl, {
+    headers: headers,
+    httpAgent: agent,
+    httpsAgent: agent,
+    timeout: 15000
+  });
+
+  const data = response.data;
+  // استخراج رابط الفيديو المباشر من ملفات الدقة المتاحة
+  if (data && data.videos && data.videos.length > 0) {
+    // اختيار أعلى جودة أو أول جودة متاحة (مثل 720p أو 1080p)
+    const selectedVideo = data.videos.find(v => v.resolution === '720p') || data.videos[0];
+    return selectedVideo.videoUrl;
   }
 
-  // في حال تم تمرير الرابط بعد علامة الاستفهام دون ترميز
-  const rawQuery = req.originalUrl.split('/stream?url=')[1];
-  if (rawQuery) {
-    targetUrl = rawQuery;
+  throw new Error('لم يتم العثور على روابط فيديو داخل استجابة المنصة.');
+}
+
+// 3. المسار التلقائي للمشاهدة: /play
+app.get('/play', async (req, res) => {
+  let videoId = req.query.id;
+  const pageUrl = req.query.url;
+
+  // استخراج المعرّف إذا أرسل المستخدم رابط الصفحة كاملاً
+  if (!videoId && pageUrl) {
+    const match = pageUrl.match(/(?:video\/[a-z]{2}\/|id\/)(\d+)/i) || pageUrl.match(/(\d{6,})/);
+    if (match) {
+      videoId = match[1];
+    }
+  }
+
+  if (!videoId) {
+    return res.status(400).send('الرجاء إرسال id الفيديو أو رابط الصفحة url.');
   }
 
   const agent = getAgent();
 
   try {
+    // خطوة أ: جلب الرابط الحقيقي والموقع باللحظة الحالية
+    const directUrl = await fetchDirectVideoUrl(videoId, agent);
+
+    // خطوة ب: تمرير تدفق الفيديو إلى المستخدم
     const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Referer': 'https://cee.buzz/',
-      'Origin': 'https://cee.buzz'
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Referer': 'https://cinemana.shabakaty.com/'
     };
 
-    // تمرير ترويسة Range لتشغيل الفيديو والتقديم والتأخير
     if (req.headers.range) {
       headers['Range'] = req.headers.range;
     }
 
-    const response = await axios({
+    const videoStream = await axios({
       method: 'get',
-      url: targetUrl,
+      url: directUrl,
       responseType: 'stream',
       headers: headers,
       httpAgent: agent,
@@ -77,38 +108,63 @@ app.get('/stream', async (req, res) => {
       validateStatus: (status) => status >= 200 && status < 400
     });
 
-    // تمرير ترويسات الاستجابة إلى المتصفح أو المشغل
-    if (response.headers['content-range']) {
-      res.setHeader('Content-Range', response.headers['content-range']);
-    }
-    if (response.headers['content-length']) {
-      res.setHeader('Content-Length', response.headers['content-length']);
-    }
-    if (response.headers['accept-ranges']) {
-      res.setHeader('Accept-Ranges', response.headers['accept-ranges']);
-    } else {
-      res.setHeader('Accept-Ranges', 'bytes');
-    }
+    if (videoStream.headers['content-range']) res.setHeader('Content-Range', videoStream.headers['content-range']);
+    if (videoStream.headers['content-length']) res.setHeader('Content-Length', videoStream.headers['content-length']);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Content-Type', videoStream.headers['content-type'] || 'video/mp4');
+    res.status(videoStream.status);
 
-    res.setHeader('Content-Type', response.headers['content-type'] || 'video/mp4');
-    res.status(response.status);
+    videoStream.data.pipe(res);
 
-    response.data.pipe(res);
-
-    response.data.on('error', (streamErr) => {
-      console.error('خطأ أثناء تدفق البيانات:', streamErr.message);
+    videoStream.data.on('error', (err) => {
+      console.error('انقطاع في دفق الفيديو:', err.message);
       if (!res.headersSent) res.status(500).end();
     });
 
   } catch (err) {
-    console.error('خطأ في سحب رابط الفيديو:', err.message);
-    if (!res.headersSent) {
-      res.status(500).json({
-        status: 'error',
-        message: 'تعذر جلب ملف الفيديو من السيرفر المصدر',
-        details: err.message
-      });
-    }
+    console.error('فشل الجلب التلقائي:', err.message);
+    res.status(500).json({
+      status: 'error',
+      message: 'تعذر سحب الفيديو تلقائياً',
+      error: err.message
+    });
+  }
+});
+
+// المسار اليدوي الاحتياطي
+app.get('/stream', async (req, res) => {
+  const rawQuery = req.originalUrl.split('/stream?url=')[1];
+  const targetUrl = rawQuery || req.query.url;
+  if (!targetUrl) return res.status(400).send('رابط غير صالح');
+
+  const agent = getAgent();
+  try {
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      'Referer': 'https://cee.buzz/'
+    };
+    if (req.headers.range) headers['Range'] = req.headers.range;
+
+    const stream = await axios({
+      method: 'get',
+      url: targetUrl,
+      responseType: 'stream',
+      headers: headers,
+      httpAgent: agent,
+      httpsAgent: agent,
+      timeout: 30000,
+      validateStatus: (s) => s >= 200 && s < 400
+    });
+
+    if (stream.headers['content-range']) res.setHeader('Content-Range', stream.headers['content-range']);
+    if (stream.headers['content-length']) res.setHeader('Content-Length', stream.headers['content-length']);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Content-Type', stream.headers['content-type'] || 'video/mp4');
+    res.status(stream.status);
+
+    stream.data.pipe(res);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
