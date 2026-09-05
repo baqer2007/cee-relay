@@ -11,32 +11,13 @@ function getAgent() {
   if (host && port) {
     return new SocksProxyAgent(`socks5://${host}:${port}`, {
       keepAlive: true,
-      timeout: 60000
+      timeout: 30000
     });
   }
   return null;
 }
 
-// 1. فحص الاتصال بالبروكسي وموقع الـ IP
-app.get('/check-ip', async (req, res) => {
-  const agent = getAgent();
-  try {
-    const config = agent ? { httpAgent: agent, httpsAgent: agent, timeout: 10000 } : { timeout: 10000 };
-    const response = await axios.get('http://ip-api.com/json', config);
-    res.json({
-      status: 'success',
-      proxy_used: agent ? `socks5://${process.env.PROXY_HOST}:${process.env.PROXY_PORT}` : 'none',
-      detected_country: response.data.countryCode,
-      detected_city: response.data.city,
-      detected_ip: response.data.query,
-      isp: response.data.isp
-    });
-  } catch (err) {
-    res.status(500).json({ status: 'failed', error: err.message });
-  }
-});
-
-// 2. دالة جلب رابط الفيديو المباشر من مسار CEE الدقيق
+// دالة جلب رابط الفيديو المباشر عبر البروكسي العراقي
 async function fetchDirectVideoUrl(videoId, agent) {
   const apiUrl = `https://cee.buzz/api/android/transcoddedFiles/id/${videoId}`;
 
@@ -51,150 +32,58 @@ async function fetchDirectVideoUrl(videoId, agent) {
     headers: headers,
     httpAgent: agent,
     httpsAgent: agent,
-    timeout: 20000
+    timeout: 15000
   });
 
   let data = response.data;
   if (typeof data === 'string') {
     try {
       data = JSON.parse(data);
-    } catch (e) {
-      console.warn('تنبيه: الاستجابة ليست كائن JSON مباشر');
-    }
+    } catch (e) {}
   }
 
-  let videosList = [];
-  if (Array.isArray(data)) {
-    videosList = data;
-  } else if (data && Array.isArray(data.videos)) {
-    videosList = data.videos;
-  }
+  let videosList = Array.isArray(data) ? data : (data && data.videos ? data.videos : []);
 
   if (videosList.length > 0) {
-    // اختيار دقة متوفرة (الأفضلية: 720p -> 1080p -> 480p -> 360p -> 240p)
     const selected = videosList.find(v => v.resolution === '720p') ||
                      videosList.find(v => v.resolution === '1080p') ||
                      videosList.find(v => v.resolution === '480p') ||
-                     videosList.find(v => v.resolution === '360p') ||
                      videosList[0];
 
-    const directUrl = selected.videoUrl || selected.videourl || selected.url;
-    if (directUrl) {
-      return directUrl;
-    }
+    return selected.videoUrl || selected.videourl || selected.url;
   }
 
-  throw new Error('لم يتم العثور على رابط فيديو صالح في بيانات الاستجابة');
+  throw new Error('لم يتم العثور على رابط فيديو صالح داخل الرد.');
 }
 
-// 3. المسار التلقائي للبث: /play
+// مسار المشاهدة السريع والتلقائي
 app.get('/play', async (req, res) => {
   let videoId = req.query.id;
   const pageUrl = req.query.url;
 
-  // استخراج المعرف من الرابط إذا تم تمرير صفحة كاملة
   if (!videoId && pageUrl) {
     const match = pageUrl.match(/(\d{6,8})/);
-    if (match) {
-      videoId = match[1];
-    }
+    if (match) videoId = match[1];
   }
 
   if (!videoId) {
-    return res.status(400).send('الرجاء تزويد معرف الفيديو id أو الرابط url');
+    return res.status(400).send('الرجاء إرسال id الفيديو');
   }
 
   const agent = getAgent();
 
   try {
-    const directVideoUrl = await fetchDirectVideoUrl(videoId, agent);
-
-    const streamHeaders = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Referer': 'https://cee.buzz/',
-      'Origin': 'https://cee.buzz'
-    };
-
-    if (req.headers.range) {
-      streamHeaders['Range'] = req.headers.range;
-    }
-
-    const videoStream = await axios({
-      method: 'get',
-      url: directVideoUrl,
-      responseType: 'stream',
-      headers: streamHeaders,
-      httpAgent: agent,
-      httpsAgent: agent,
-      timeout: 30000,
-      validateStatus: (status) => status >= 200 && status < 400
-    });
-
-    if (videoStream.headers['content-range']) {
-      res.setHeader('Content-Range', videoStream.headers['content-range']);
-    }
-    if (videoStream.headers['content-length']) {
-      res.setHeader('Content-Length', videoStream.headers['content-length']);
-    }
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Content-Type', videoStream.headers['content-type'] || 'video/mp4');
-    res.status(videoStream.status);
-
-    videoStream.data.pipe(res);
-
-    videoStream.data.on('error', (err) => {
-      console.error('انقطاع أثناء تدفق الفيديو:', err.message);
-      if (!res.headersSent) res.status(500).end();
-    });
+    const directUrl = await fetchDirectVideoUrl(videoId, agent);
+    
+    // توجيه المتصفح أو مشغل الفيديو مباشرة للرابط الموقع
+    res.redirect(302, directUrl);
 
   } catch (err) {
-    console.error('فشل الجلب التلقائي:', err.message);
-    if (!res.headersSent) {
-      res.status(500).json({
-        status: 'error',
-        message: 'تعذر سحب الفيديو تلقائياً من منصة CEE',
-        details: err.message
-      });
-    }
-  }
-});
-
-// 4. مسار احتياطي للبث المباشر لأي رابط خارجي: /stream
-app.get('/stream', async (req, res) => {
-  const rawQuery = req.originalUrl.split('/stream?url=')[1];
-  const targetUrl = rawQuery ? decodeURIComponent(rawQuery) : req.query.url;
-
-  if (!targetUrl) return res.status(400).send('رابط غير صالح');
-
-  const agent = getAgent();
-  try {
-    const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-      'Referer': 'https://cee.buzz/'
-    };
-
-    if (req.headers.range) headers['Range'] = req.headers.range;
-
-    const stream = await axios({
-      method: 'get',
-      url: targetUrl,
-      responseType: 'stream',
-      headers: headers,
-      httpAgent: agent,
-      httpsAgent: agent,
-      timeout: 30000,
-      validateStatus: (s) => s >= 200 && s < 400
+    res.status(500).json({
+      status: 'error',
+      message: 'تعذر استخراج رابط الفيديو من CEE',
+      details: err.message
     });
-
-    if (stream.headers['content-range']) res.setHeader('Content-Range', stream.headers['content-range']);
-    if (stream.headers['content-length']) res.setHeader('Content-Length', stream.headers['content-length']);
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Content-Type', stream.headers['content-type'] || 'video/mp4');
-    res.status(stream.status);
-
-    stream.data.pipe(res);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
   }
 });
 
