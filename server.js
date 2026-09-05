@@ -12,7 +12,7 @@ function getAgent() {
   if (host && port) {
     return new SocksProxyAgent(`socks5://${host}:${port}`, {
       keepAlive: true,
-      timeout: 30000
+      timeout: 45000
     });
   }
   return null;
@@ -31,7 +31,7 @@ function findKeyDeep(obj, keyName) {
   return null;
 }
 
-// دالة جلب كافة تفاصيل الفيديو (جودات متعددة + ترجمات)
+// دالة جلب كافة تفاصيل الفيديو (جودات متعددة + ترجمات) بمهلات طويلة
 async function fetchFullMediaDetails(inputParam, agent) {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -49,7 +49,7 @@ async function fetchFullMediaDetails(inputParam, agent) {
       headers,
       httpAgent: agent,
       httpsAgent: agent,
-      timeout: 10000
+      timeout: 30000
     });
 
     const data = postRes.data;
@@ -73,7 +73,7 @@ async function fetchFullMediaDetails(inputParam, agent) {
     headers,
     httpAgent: agent,
     httpsAgent: agent,
-    timeout: 15000
+    timeout: 35000
   });
 
   let filesData = filesRes.data;
@@ -102,7 +102,7 @@ async function fetchFullMediaDetails(inputParam, agent) {
 app.get('/check-ip', async (req, res) => {
   const agent = getAgent();
   try {
-    const config = agent ? { httpAgent: agent, httpsAgent: agent, timeout: 10000 } : { timeout: 10000 };
+    const config = agent ? { httpAgent: agent, httpsAgent: agent, timeout: 15000 } : { timeout: 15000 };
     const response = await axios.get('http://ip-api.com/json', config);
     res.json({
       status: 'success',
@@ -128,7 +128,7 @@ app.get('/api/sub-proxy', async (req, res) => {
       httpAgent: agent,
       httpsAgent: agent,
       responseType: 'text',
-      timeout: 10000
+      timeout: 15000
     });
     res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
     res.send(response.data);
@@ -137,7 +137,7 @@ app.get('/api/sub-proxy', async (req, res) => {
   }
 });
 
-// 3. مسار بروكسي تدفق الفيديو
+// 3. مسار بروكسي تدفق الفيديو المباشر
 app.get('/api/stream-proxy', async (req, res) => {
   const targetUrl = req.query.url;
   if (!targetUrl) return res.status(400).send('رابط الفيديو مطلوب');
@@ -159,7 +159,7 @@ app.get('/api/stream-proxy', async (req, res) => {
       httpAgent: agent,
       httpsAgent: agent,
       responseType: 'stream',
-      timeout: 30000
+      timeout: 45000
     });
 
     Object.keys(response.headers).forEach(key => {
