@@ -17,7 +17,7 @@ function getAgent() {
   return null;
 }
 
-// مسار لجلب الروابط والجودات
+// 1. مسار جلب تفاصيل الفيديو والجودات وتغليفها برابط سيرفرنا الخاص
 app.get('/api/get-stream', async (req, res) => {
   let id = req.query.id;
   if (!id && req.query.url) {
@@ -30,38 +30,44 @@ app.get('/api/get-stream', async (req, res) => {
     const agent = getAgent();
     const filesApi = `https://cee.buzz/api/android/transcoddedFiles/id/${id}`;
     const response = await axios.get(filesApi, {
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://cee.buzz/' },
-      httpAgent: agent, httpsAgent: agent, timeout: 25000
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 
+        'Referer': 'https://cee.buzz/' 
+      },
+      httpAgent: agent, 
+      httpsAgent: agent, 
+      timeout: 25000
     });
 
     let filesData = response.data;
-    if (typeof filesData === 'string') filesData = JSON.parse(filesData);
+    if (typeof filesData === 'string') {
+      try { filesData = JSON.parse(filesData); } catch(e){}
+    }
+    
     const list = Array.isArray(filesData) ? filesData : (filesData.videos || []);
-    if (!list.length) return res.status(404).json({ status: 'error', message: 'لا توجد ملفات' });
+    if (!list.length) return res.status(404).json({ status: 'error', message: 'لا توجد ملفات فيديو' });
 
-    const qualities = list.map(item => ({
-      resolution: item.resolution || 'Auto',
-      url: item.videoUrl || item.videourl || item.url
-    })).filter(q => q.url);
-
-    // توجيه رابط التشغيل ليمر عبر سيرفرنا لتفادي مشاكل الـ Source error والـ IP
-    const defaultRawUrl = (qualities.find(q => q.resolution === '720p') || qualities[0]).url;
-    const proxiedDefaultUrl = `${req.protocol}://${req.get('host')}/api/stream-proxy?url=${encodeURIComponent(defaultRawUrl)}`;
+    const qualities = list.map(item => {
+      const rawUrl = item.videoUrl || item.videourl || item.url;
+      return {
+        resolution: item.resolution || 'Auto',
+        // تحويل الرابط الأصلي ليصبح ماراً عبر سيرفرنا كـ Proxy Stream
+        url: `${req.protocol}://${req.get('host')}/api/stream-proxy?url=${encodeURIComponent(rawUrl)}`
+      };
+    }).filter(q => q.url);
 
     res.json({
       status: 'success',
-      video_url: proxiedDefaultUrl,
-      qualities: qualities.map(q => ({
-        resolution: q.resolution,
-        url: `${req.protocol}://${req.get('host')}/api/stream-proxy?url=${encodeURIComponent(q.url)}`
-      }))
+      video_url: qualities.find(q => q.resolution === '720p')?.url || qualities[0].url,
+      qualities: qualities,
+      subtitles: []
     });
   } catch (err) {
     res.status(500).json({ status: 'error', message: err.message });
   }
 });
 
-// مسار وسيط (Proxy) لتمرير بيانات الفيديو الحقيقية عبر البروكسي للمشغل
+// 2. مسار البث الوسيط (Stream Proxy) لسحب وتمرير الفيديو بسلاسة للمشغل
 app.get('/api/stream-proxy', async (req, res) => {
   const targetUrl = req.query.url;
   if (!targetUrl) return res.status(400).send('URL required');
@@ -71,9 +77,9 @@ app.get('/api/stream-proxy', async (req, res) => {
     const response = await axios.get(targetUrl, {
       responseType: 'stream',
       headers: {
-        'User-Agent': 'Mozilla/5.0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         'Referer': 'https://cee.buzz/',
-        'Range:': req.headers.range || ''
+        'Range': req.headers.range || 'bytes=0-'
       },
       httpAgent: agent,
       httpsAgent: agent,
@@ -87,4 +93,4 @@ app.get('/api/stream-proxy', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
