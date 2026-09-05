@@ -13,75 +13,78 @@ function getAgent() {
       const cleanHost = host.replace(/^https?:\/\//, '').replace(/\/$/, '');
       return new SocksProxyAgent(`socks5://${cleanHost}:${port}`);
     }
-  } catch (e) {
-    console.error('Proxy Agent Error:', e.message);
-  }
+  } catch (e) {}
   return null;
 }
 
+// مسار لجلب الروابط والجودات
 app.get('/api/get-stream', async (req, res) => {
   let id = req.query.id;
-  const pageUrl = req.query.url;
-
-  if (!id && pageUrl) {
-    const match = pageUrl.match(/(\d{6,8})/);
+  if (!id && req.query.url) {
+    const match = req.query.url.match(/(\d{6,8})/);
     if (match) id = match[1];
   }
-
-  if (!id) {
-    return res.status(400).json({ status: 'error', message: 'معرف الفيديو مطلوب' });
-  }
+  if (!id) return res.status(400).json({ status: 'error', message: 'معرف مطلوب' });
 
   try {
     const agent = getAgent();
     const filesApi = `https://cee.buzz/api/android/transcoddedFiles/id/${id}`;
-    
     const response = await axios.get(filesApi, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-        'Referer': 'https://cee.buzz/',
-        'Origin': 'https://cee.buzz',
-        'Accept': 'application/json, text/plain, */*'
-      },
-      httpAgent: agent,
-      httpsAgent: agent,
-      timeout: 25000
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://cee.buzz/' },
+      httpAgent: agent, httpsAgent: agent, timeout: 25000
     });
 
     let filesData = response.data;
-    if (typeof filesData === 'string') {
-      try { filesData = JSON.parse(filesData); } catch (e) {}
-    }
-
-    const list = Array.isArray(filesData) ? filesData : (filesData && filesData.videos ? filesData.videos : []);
-    if (!list.length) {
-      return res.status(404).json({ status: 'error', message: 'لم يتم العثور على ملفات فيديو.' });
-    }
+    if (typeof filesData === 'string') filesData = JSON.parse(filesData);
+    const list = Array.isArray(filesData) ? filesData : (filesData.videos || []);
+    if (!list.length) return res.status(404).json({ status: 'error', message: 'لا توجد ملفات' });
 
     const qualities = list.map(item => ({
       resolution: item.resolution || 'Auto',
       url: item.videoUrl || item.videourl || item.url
-    })).filter(item => Boolean(item.url));
+    })).filter(q => q.url);
 
-    const defaultUrl = (qualities.find(q => q.resolution === '720p') || qualities[0]).url;
+    // توجيه رابط التشغيل ليمر عبر سيرفرنا لتفادي مشاكل الـ Source error والـ IP
+    const defaultRawUrl = (qualities.find(q => q.resolution === '720p') || qualities[0]).url;
+    const proxiedDefaultUrl = `${req.protocol}://${req.get('host')}/api/stream-proxy?url=${encodeURIComponent(defaultRawUrl)}`;
 
     res.json({
       status: 'success',
-      video_id: id,
-      video_url: defaultUrl,
-      qualities: qualities,
-      subtitles: []
+      video_url: proxiedDefaultUrl,
+      qualities: qualities.map(q => ({
+        resolution: q.resolution,
+        url: `${req.protocol}://${req.get('host')}/api/stream-proxy?url=${encodeURIComponent(q.url)}`
+      }))
     });
-
   } catch (err) {
-    console.error('API Error:', err.message);
-    res.status(500).json({
-      status: 'error',
-      message: `خطأ في الاتصال: ${err.message}`
-    });
+    res.status(500).json({ status: 'error', message: err.message });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+// مسار وسيط (Proxy) لتمرير بيانات الفيديو الحقيقية عبر البروكسي للمشغل
+app.get('/api/stream-proxy', async (req, res) => {
+  const targetUrl = req.query.url;
+  if (!targetUrl) return res.status(400).send('URL required');
+
+  try {
+    const agent = getAgent();
+    const response = await axios.get(targetUrl, {
+      responseType: 'stream',
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Referer': 'https://cee.buzz/',
+        'Range:': req.headers.range || ''
+      },
+      httpAgent: agent,
+      httpsAgent: agent,
+      timeout: 30000
+    });
+
+    res.writeHead(response.status, response.headers);
+    response.data.pipe(res);
+  } catch (err) {
+    res.status(500).send(`Proxy Error: ${err.message}`);
+  }
 });
+
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));
