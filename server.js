@@ -5,21 +5,20 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// إعداد وكيل SOCKS5 المربوط بنفق Termux / Pinggy
 function getAgent() {
   const host = process.env.PROXY_HOST;
   const port = process.env.PROXY_PORT;
   if (host && port) {
     return new SocksProxyAgent(`socks5://${host}:${port}`, {
       keepAlive: true,
-      timeout: 45000
+      timeout: 30000
     });
   }
   return null;
 }
 
-// دالة مساعدة لتكرار الطلب تلقائياً عند حدوث انقطاع (ECONNRESET)
-async function axiosWithRetry(config, retries = 3, delay = 1000) {
+// دالة إعادة محاولة سريعة
+async function axiosWithRetry(config, retries = 2, delay = 500) {
   for (let i = 0; i < retries; i++) {
     try {
       return await axios(config);
@@ -30,21 +29,8 @@ async function axiosWithRetry(config, retries = 3, delay = 1000) {
   }
 }
 
-// دالة مساعدة للبحث داخل الكائنات المعقدة لاستخراج المعرفات
-function findKeyDeep(obj, keyName) {
-  if (!obj) return null;
-  if (obj[keyName]) return obj[keyName];
-  if (typeof obj === 'object') {
-    for (const k of Object.keys(obj)) {
-      const res = findKeyDeep(obj[k], keyName);
-      if (res) return res;
-    }
-  }
-  return null;
-}
-
-// دالة جلب كافة تفاصيل الفيديو مع خاصية إعادة المحاولة التلقائية
-async function fetchFullMediaDetails(inputParam, agent) {
+// دالة سريعة لجلب روابط الفيديو مباشرة بدون إبطاء السيرفر
+async function fetchMediaDirectly(videoId, agent) {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
     'Referer': 'https://cee.buzz/',
@@ -52,44 +38,15 @@ async function fetchFullMediaDetails(inputParam, agent) {
     'Accept': 'application/json, text/plain, */*'
   };
 
-  let targetVideoId = inputParam;
-  let subtitles = [];
-
-  try {
-    const postInfoUrl = `https://cee.buzz/api/android/video/id/${inputParam}`;
-    const postRes = await axiosWithRetry({
-      url: postInfoUrl,
-      method: 'get',
-      headers,
-      httpAgent: agent,
-      httpsAgent: agent,
-      timeout: 30000
-    });
-
-    const data = postRes.data;
-    const internalId = (data && data.videos && data.videos[0] && data.videos[0].id) ||
-                       (data && data.episodes && data.episodes[0] && data.episodes[0].id) ||
-                       findKeyDeep(data, 'video_id') ||
-                       findKeyDeep(data, 'videoId');
-
-    if (internalId) targetVideoId = internalId;
-
-    if (data && data.subtitles && Array.isArray(data.subtitles)) {
-      subtitles = data.subtitles.map(s => ({
-        lang: s.language || s.name || 'العربية',
-        url: s.fileUrl || s.url || s.file
-      }));
-    }
-  } catch (e) {}
-
-  const filesApi = `https://cee.buzz/api/android/transcoddedFiles/id/${targetVideoId}`;
+  const filesApi = `https://cee.buzz/api/android/transcoddedFiles/id/${videoId}`;
+  
   const filesRes = await axiosWithRetry({
     url: filesApi,
     method: 'get',
     headers,
     httpAgent: agent,
     httpsAgent: agent,
-    timeout: 35000
+    timeout: 15000
   });
 
   let filesData = filesRes.data;
@@ -109,53 +66,28 @@ async function fetchFullMediaDetails(inputParam, agent) {
 
   return {
     qualities,
-    subtitles,
     defaultUrl: (qualities.find(q => q.resolution === '720p') || qualities[0]).url
   };
 }
 
-// 1. مسار فحص الاتصال بالبروكسي وموقع الـ IP
+// مسار فحص الـ IP
 app.get('/check-ip', async (req, res) => {
   const agent = getAgent();
   try {
-    const config = agent ? { url: 'http://ip-api.com/json', method: 'get', httpAgent: agent, httpsAgent: agent, timeout: 15000 } : { url: 'http://ip-api.com/json', method: 'get', timeout: 15000 };
+    const config = agent ? { url: 'http://ip-api.com/json', method: 'get', httpAgent: agent, httpsAgent: agent, timeout: 10000 } : { url: 'http://ip-api.com/json', method: 'get', timeout: 10000 };
     const response = await axiosWithRetry(config);
     res.json({
       status: 'success',
       proxy_used: agent ? `socks5://${process.env.PROXY_HOST}:${process.env.PROXY_PORT}` : 'none',
       detected_country: response.data.countryCode,
-      detected_city: response.data.city,
-      detected_ip: response.data.query,
-      isp: response.data.isp
+      detected_ip: response.data.query
     });
   } catch (err) {
     res.status(500).json({ status: 'failed', error: err.message });
   }
 });
 
-// 2. مسار وسيط لتمرير ملفات الترجمة
-app.get('/api/sub-proxy', async (req, res) => {
-  const subUrl = req.query.url;
-  if (!subUrl) return res.status(400).send('رابط الترجمة مطلوب');
-
-  const agent = getAgent();
-  try {
-    const response = await axiosWithRetry({
-      url: subUrl,
-      method: 'get',
-      httpAgent: agent,
-      httpsAgent: agent,
-      responseType: 'text',
-      timeout: 15000
-    });
-    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-    res.send(response.data);
-  } catch (err) {
-    res.status(500).send('فشل تحميل ملف الترجمة');
-  }
-});
-
-// 3. مسار بروكسي تدفق الفيديو مع إعادة المحاولة
+// مسار تدفق الفيديو السريع
 app.get('/api/stream-proxy', async (req, res) => {
   const targetUrl = req.query.url;
   if (!targetUrl) return res.status(400).send('رابط الفيديو مطلوب');
@@ -179,8 +111,8 @@ app.get('/api/stream-proxy', async (req, res) => {
       httpAgent: agent,
       httpsAgent: agent,
       responseType: 'stream',
-      timeout: 45000
-    }, 3, 1000);
+      timeout: 30000
+    }, 2, 500);
 
     Object.keys(response.headers).forEach(key => {
       res.setHeader(key, response.headers[key]);
@@ -194,7 +126,7 @@ app.get('/api/stream-proxy', async (req, res) => {
   }
 });
 
-// 4. المسار الرئيسي لتطبيق Flutter
+// المسار الرئيسي لتطبيق Flutter (أصبح سريعاً وفورياً)
 app.get('/api/get-stream', async (req, res) => {
   let id = req.query.id;
   const pageUrl = req.query.url;
@@ -211,7 +143,7 @@ app.get('/api/get-stream', async (req, res) => {
   const agent = getAgent();
 
   try {
-    const media = await fetchFullMediaDetails(id, agent);
+    const media = await fetchMediaDirectly(id, agent);
     
     res.json({
       status: 'success',
@@ -221,10 +153,7 @@ app.get('/api/get-stream', async (req, res) => {
         resolution: q.resolution,
         url: `https://${req.get('host')}/api/stream-proxy?url=${encodeURIComponent(q.url)}`
       })),
-      subtitles: media.subtitles.map(s => ({
-        lang: s.lang,
-        url: `https://${req.get('host')}/api/sub-proxy?url=${encodeURIComponent(s.url)}`
-      }))
+      subtitles: []
     });
   } catch (err) {
     res.status(500).json({
