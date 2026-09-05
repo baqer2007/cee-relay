@@ -18,6 +18,18 @@ function getAgent() {
   return null;
 }
 
+// دالة مساعدة لتكرار الطلب تلقائياً عند حدوث انقطاع (ECONNRESET)
+async function axiosWithRetry(config, retries = 3, delay = 1000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await axios(config);
+    } catch (err) {
+      if (i === retries - 1) throw err;
+      await new Promise(res => setTimeout(res, delay));
+    }
+  }
+}
+
 // دالة مساعدة للبحث داخل الكائنات المعقدة لاستخراج المعرفات
 function findKeyDeep(obj, keyName) {
   if (!obj) return null;
@@ -31,7 +43,7 @@ function findKeyDeep(obj, keyName) {
   return null;
 }
 
-// دالة جلب كافة تفاصيل الفيديو (جودات متعددة + ترجمات) بمهلات طويلة
+// دالة جلب كافة تفاصيل الفيديو مع خاصية إعادة المحاولة التلقائية
 async function fetchFullMediaDetails(inputParam, agent) {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -45,7 +57,9 @@ async function fetchFullMediaDetails(inputParam, agent) {
 
   try {
     const postInfoUrl = `https://cee.buzz/api/android/video/id/${inputParam}`;
-    const postRes = await axios.get(postInfoUrl, {
+    const postRes = await axiosWithRetry({
+      url: postInfoUrl,
+      method: 'get',
       headers,
       httpAgent: agent,
       httpsAgent: agent,
@@ -69,7 +83,9 @@ async function fetchFullMediaDetails(inputParam, agent) {
   } catch (e) {}
 
   const filesApi = `https://cee.buzz/api/android/transcoddedFiles/id/${targetVideoId}`;
-  const filesRes = await axios.get(filesApi, {
+  const filesRes = await axiosWithRetry({
+    url: filesApi,
+    method: 'get',
     headers,
     httpAgent: agent,
     httpsAgent: agent,
@@ -102,8 +118,8 @@ async function fetchFullMediaDetails(inputParam, agent) {
 app.get('/check-ip', async (req, res) => {
   const agent = getAgent();
   try {
-    const config = agent ? { httpAgent: agent, httpsAgent: agent, timeout: 15000 } : { timeout: 15000 };
-    const response = await axios.get('http://ip-api.com/json', config);
+    const config = agent ? { url: 'http://ip-api.com/json', method: 'get', httpAgent: agent, httpsAgent: agent, timeout: 15000 } : { url: 'http://ip-api.com/json', method: 'get', timeout: 15000 };
+    const response = await axiosWithRetry(config);
     res.json({
       status: 'success',
       proxy_used: agent ? `socks5://${process.env.PROXY_HOST}:${process.env.PROXY_PORT}` : 'none',
@@ -124,7 +140,9 @@ app.get('/api/sub-proxy', async (req, res) => {
 
   const agent = getAgent();
   try {
-    const response = await axios.get(subUrl, {
+    const response = await axiosWithRetry({
+      url: subUrl,
+      method: 'get',
       httpAgent: agent,
       httpsAgent: agent,
       responseType: 'text',
@@ -137,7 +155,7 @@ app.get('/api/sub-proxy', async (req, res) => {
   }
 });
 
-// 3. مسار بروكسي تدفق الفيديو المباشر
+// 3. مسار بروكسي تدفق الفيديو مع إعادة المحاولة
 app.get('/api/stream-proxy', async (req, res) => {
   const targetUrl = req.query.url;
   if (!targetUrl) return res.status(400).send('رابط الفيديو مطلوب');
@@ -154,13 +172,15 @@ app.get('/api/stream-proxy', async (req, res) => {
   }
 
   try {
-    const response = await axios.get(targetUrl, {
+    const response = await axiosWithRetry({
+      url: targetUrl,
+      method: 'get',
       headers,
       httpAgent: agent,
       httpsAgent: agent,
       responseType: 'stream',
       timeout: 45000
-    });
+    }, 3, 1000);
 
     Object.keys(response.headers).forEach(key => {
       res.setHeader(key, response.headers[key]);
