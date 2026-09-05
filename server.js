@@ -17,7 +17,7 @@ function getAgent() {
   return null;
 }
 
-// 1. مسار فحص البروكسي
+// 1. فحص الاتصال بالبروكسي وموقع الـ IP
 app.get('/check-ip', async (req, res) => {
   const agent = getAgent();
   try {
@@ -36,105 +36,81 @@ app.get('/check-ip', async (req, res) => {
   }
 });
 
-// دالة مساعدة للبحث التلقائي عن أي رابط فيديو داخل كائن البيانات
-function extractVideoUrl(obj) {
-  if (!obj) return null;
-  if (typeof obj === 'string') {
-    if (obj.startsWith('http') && (obj.includes('.mp4') || obj.includes('Signature=') || obj.includes('/vascin'))) {
-      return obj;
-    }
-    return null;
-  }
-  if (Array.isArray(obj)) {
-    for (const item of obj) {
-      const found = extractVideoUrl(item);
-      if (found) return found;
-    }
-  } else if (typeof obj === 'object') {
-    // إعطاء أولوية للجودات العالية إذا كانت مصفوفة فيديوهات
-    if (Array.isArray(obj.videos)) {
-      const best = obj.videos.find(v => v.resolution === '720p') ||
-                   obj.videos.find(v => v.resolution === '1080p') ||
-                   obj.videos[0];
-      if (best) {
-        const url = best.videourl || best.videoUrl || best.url;
-        if (url) return url;
-      }
-    }
-    for (const key of Object.keys(obj)) {
-      const found = extractVideoUrl(obj[key]);
-      if (found) return found;
-    }
-  }
-  return null;
-}
+// 2. دالة جلب رابط الفيديو المباشر من مسار CEE الدقيق
+async function fetchDirectVideoUrl(videoId, agent) {
+  const apiUrl = `https://cee.buzz/api/android/transcoddedFiles/id/${videoId}`;
 
-// 2. دالة طلب الـ API من CEE
-async function fetchFromCee(videoId, agent) {
-  // تجربة الطلب بالمعرف مع ترويسات CEE الكاملة
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Referer': `https://cee.buzz/video/en/${videoId}`,
+    'Referer': `https://cee.buzz/video/en/${videoId}?show=true`,
     'Origin': 'https://cee.buzz',
-    'Accept': '*/*'
+    'Accept': 'application/json, text/plain, */*'
   };
 
-  // محاولة عبر الرابط المباشر
-  const url1 = `https://cee.buzz/video/api/${videoId}?page-url=https://cinemana.shabakaty.com/video/en/${videoId}`;
-  
-  try {
-    const res = await axios.get(url1, { headers, httpAgent: agent, httpsAgent: agent, timeout: 15000 });
-    return res.data;
-  } catch (e) {
-    // محاولة بديلة بدون page-url
-    const url2 = `https://cee.buzz/video/api/${videoId}`;
-    const res2 = await axios.get(url2, { headers, httpAgent: agent, httpsAgent: agent, timeout: 15000 });
-    return res2.data;
+  const response = await axios.get(apiUrl, {
+    headers: headers,
+    httpAgent: agent,
+    httpsAgent: agent,
+    timeout: 20000
+  });
+
+  let data = response.data;
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data);
+    } catch (e) {
+      console.warn('تنبيه: الاستجابة ليست كائن JSON مباشر');
+    }
   }
+
+  let videosList = [];
+  if (Array.isArray(data)) {
+    videosList = data;
+  } else if (data && Array.isArray(data.videos)) {
+    videosList = data.videos;
+  }
+
+  if (videosList.length > 0) {
+    // اختيار دقة متوفرة (الأفضلية: 720p -> 1080p -> 480p -> 360p -> 240p)
+    const selected = videosList.find(v => v.resolution === '720p') ||
+                     videosList.find(v => v.resolution === '1080p') ||
+                     videosList.find(v => v.resolution === '480p') ||
+                     videosList.find(v => v.resolution === '360p') ||
+                     videosList[0];
+
+    const directUrl = selected.videoUrl || selected.videourl || selected.url;
+    if (directUrl) {
+      return directUrl;
+    }
+  }
+
+  throw new Error('لم يتم العثور على رابط فيديو صالح في بيانات الاستجابة');
 }
 
-// 3. مسار تشخيصي لرؤية استجابة CEE الخام
-app.get('/debug', async (req, res) => {
-  const videoId = req.query.id || '58386727';
-  const agent = getAgent();
-  try {
-    const data = await fetchFromCee(videoId, agent);
-    res.json({ status: 'ok', raw_response: data, detected_url: extractVideoUrl(data) });
-  } catch (e) {
-    res.status(500).json({ error: e.message, response: e.response ? e.response.data : null });
-  }
-});
-
-// 4. المسار التلقائي للبث: /play
+// 3. المسار التلقائي للبث: /play
 app.get('/play', async (req, res) => {
   let videoId = req.query.id;
   const pageUrl = req.query.url;
 
+  // استخراج المعرف من الرابط إذا تم تمرير صفحة كاملة
   if (!videoId && pageUrl) {
-    const match = pageUrl.match(/(\d{6,})/);
-    if (match) videoId = match[1];
+    const match = pageUrl.match(/(\d{6,8})/);
+    if (match) {
+      videoId = match[1];
+    }
   }
 
   if (!videoId) {
-    return res.status(400).send('الرجاء إرسال id الفيديو');
+    return res.status(400).send('الرجاء تزويد معرف الفيديو id أو الرابط url');
   }
 
   const agent = getAgent();
 
   try {
-    const data = await fetchFromCee(videoId, agent);
-    const directVideoUrl = extractVideoUrl(data);
-
-    if (!directVideoUrl) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'تم استلام رد من CEE لكن لم يتم العثور على رابط فيديو بداخله',
-        cee_data: data
-      });
-    }
+    const directVideoUrl = await fetchDirectVideoUrl(videoId, agent);
 
     const streamHeaders = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'Referer': 'https://cee.buzz/',
       'Origin': 'https://cee.buzz'
     };
@@ -154,38 +130,49 @@ app.get('/play', async (req, res) => {
       validateStatus: (status) => status >= 200 && status < 400
     });
 
-    if (videoStream.headers['content-range']) res.setHeader('Content-Range', videoStream.headers['content-range']);
-    if (videoStream.headers['content-length']) res.setHeader('Content-Length', videoStream.headers['content-length']);
+    if (videoStream.headers['content-range']) {
+      res.setHeader('Content-Range', videoStream.headers['content-range']);
+    }
+    if (videoStream.headers['content-length']) {
+      res.setHeader('Content-Length', videoStream.headers['content-length']);
+    }
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Content-Type', videoStream.headers['content-type'] || 'video/mp4');
     res.status(videoStream.status);
 
     videoStream.data.pipe(res);
 
-    videoStream.data.on('error', () => {
+    videoStream.data.on('error', (err) => {
+      console.error('انقطاع أثناء تدفق الفيديو:', err.message);
       if (!res.headersSent) res.status(500).end();
     });
 
   } catch (err) {
+    console.error('فشل الجلب التلقائي:', err.message);
     if (!res.headersSent) {
       res.status(500).json({
         status: 'error',
-        message: 'تعذر الاتصال بـ CEE',
+        message: 'تعذر سحب الفيديو تلقائياً من منصة CEE',
         details: err.message
       });
     }
   }
 });
 
-// المسار اليدوي الاحتياطي
+// 4. مسار احتياطي للبث المباشر لأي رابط خارجي: /stream
 app.get('/stream', async (req, res) => {
   const rawQuery = req.originalUrl.split('/stream?url=')[1];
   const targetUrl = rawQuery ? decodeURIComponent(rawQuery) : req.query.url;
+
   if (!targetUrl) return res.status(400).send('رابط غير صالح');
 
   const agent = getAgent();
   try {
-    const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Referer': 'https://cee.buzz/' };
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      'Referer': 'https://cee.buzz/'
+    };
+
     if (req.headers.range) headers['Range'] = req.headers.range;
 
     const stream = await axios({
