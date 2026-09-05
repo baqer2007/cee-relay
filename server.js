@@ -17,7 +17,6 @@ function getAgent() {
   return null;
 }
 
-// 1. مسار جلب تفاصيل الفيديو والجودات وتغليفها برابط سيرفرنا الخاص
 app.get('/api/get-stream', async (req, res) => {
   let id = req.query.id;
   if (!id && req.query.url) {
@@ -47,49 +46,21 @@ app.get('/api/get-stream', async (req, res) => {
     const list = Array.isArray(filesData) ? filesData : (filesData.videos || []);
     if (!list.length) return res.status(404).json({ status: 'error', message: 'لا توجد ملفات فيديو' });
 
-    const qualities = list.map(item => {
-      const rawUrl = item.videoUrl || item.videourl || item.url;
-      return {
-        resolution: item.resolution || 'Auto',
-        // تحويل الرابط الأصلي ليصبح ماراً عبر سيرفرنا كـ Proxy Stream
-        url: `${req.protocol}://${req.get('host')}/api/stream-proxy?url=${encodeURIComponent(rawUrl)}`
-      };
-    }).filter(q => q.url);
+    const qualities = list.map(item => ({
+      resolution: item.resolution || 'Auto',
+      url: item.videoUrl || item.videourl || item.url
+    })).filter(q => q.url);
+
+    const defaultUrl = qualities.find(q => q.resolution === '720p')?.url || qualities[0].url;
 
     res.json({
       status: 'success',
-      video_url: qualities.find(q => q.resolution === '720p')?.url || qualities[0].url,
+      video_url: defaultUrl,
       qualities: qualities,
       subtitles: []
     });
-  } catch (err) {
+  }حدث catch (err) {
     res.status(500).json({ status: 'error', message: err.message });
-  }
-});
-
-// 2. مسار البث الوسيط (Stream Proxy) لسحب وتمرير الفيديو بسلاسة للمشغل
-app.get('/api/stream-proxy', async (req, res) => {
-  const targetUrl = req.query.url;
-  if (!targetUrl) return res.status(400).send('URL required');
-
-  try {
-    const agent = getAgent();
-    const response = await axios.get(targetUrl, {
-      responseType: 'stream',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-        'Referer': 'https://cee.buzz/',
-        'Range': req.headers.range || 'bytes=0-'
-      },
-      httpAgent: agent,
-      httpsAgent: agent,
-      timeout: 30000
-    });
-
-    res.writeHead(response.status, response.headers);
-    response.data.pipe(res);
-  } catch (err) {
-    res.status(500).send(`Proxy Error: ${err.message}`);
   }
 });
 
