@@ -11,26 +11,28 @@ function getAgent() {
   if (host && port) {
     return new SocksProxyAgent(`socks5://${host}:${port}`, {
       keepAlive: true,
-      timeout: 30000
+      timeout: 120000
     });
   }
   return null;
 }
 
-// دالة جلب رابط الفيديو من واجهة المنصة عبر البروكسي
+// 1. استخراج رابط الفيديو من CEE عبر البروكسي
 async function fetchDirectVideoUrl(videoId, agent) {
   const apiUrl = `https://cee.buzz/api/android/transcoddedFiles/id/${videoId}`;
+
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
     'Referer': `https://cee.buzz/video/en/${videoId}?show=true`,
-    'Origin': 'https://cee.buzz'
+    'Origin': 'https://cee.buzz',
+    'Accept': 'application/json, text/plain, */*'
   };
 
   const response = await axios.get(apiUrl, {
-    headers,
+    headers: headers,
     httpAgent: agent,
     httpsAgent: agent,
-    timeout: 15000
+    timeout: 20000
   });
 
   let data = response.data;
@@ -40,9 +42,10 @@ async function fetchDirectVideoUrl(videoId, agent) {
 
   const list = Array.isArray(data) ? data : (data && data.videos ? data.videos : []);
   if (list.length > 0) {
-    const selected = list.find(v => v.resolution === '720p') ||
-                     list.find(v => v.resolution === '1080p') ||
-                     list.find(v => v.resolution === '480p') ||
+    // اختيار الجودة المناسبة (480p أو 720p أو 360p لتفادي بطء التحميل)
+    const selected = list.find(v => v.resolution === '480p') ||
+                     list.find(v => v.resolution === '720p') ||
+                     list.find(v => v.resolution === '360p') ||
                      list[0];
 
     return selected.videoUrl || selected.videourl || selected.url;
@@ -50,7 +53,7 @@ async function fetchDirectVideoUrl(videoId, agent) {
   throw new Error('لم يتم العثور على رابط فيديو في الاستجابة.');
 }
 
-// دالة التعامل مع بث الفيديو لمشغلات الميديا (تدعم GET و HEAD)
+// 2. دالة تدفق الفيديو عبر البروكسي العراقي بدون timeout
 async function handleStream(req, res) {
   let videoId = req.query.id;
   const pageUrl = req.query.url;
@@ -65,10 +68,8 @@ async function handleStream(req, res) {
   const agent = getAgent();
 
   try {
-    // 1. جلب الرابط من API عبر البروكسي
     const targetVideoUrl = await fetchDirectVideoUrl(videoId, agent);
 
-    // 2. إعداد الترويسات لجلب الفيديو من سيرفرات CDN
     const cdnHeaders = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
       'Referer': 'https://cee.buzz/',
@@ -79,26 +80,15 @@ async function handleStream(req, res) {
       cdnHeaders['Range'] = req.headers.range;
     }
 
-    // إذا كان الطلب HEAD من VLC للتأكد من الملف فقط
-    if (req.method === 'HEAD') {
-      const headRes = await axios.head(targetVideoUrl, {
-        headers: cdnHeaders,
-        timeout: 15000,
-        validateStatus: (s) => s >= 200 && s < 400
-      });
-      res.set(headRes.headers);
-      res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Content-Type', 'video/mp4');
-      return res.status(headRes.status).end();
-    }
-
-    // طلب تدفق الفيديو الفعلي
+    // جلب الفيديو عبر البروكسي العراقي لفك الحظر الجغرافي
     const response = await axios({
       method: 'get',
       url: targetVideoUrl,
       responseType: 'stream',
       headers: cdnHeaders,
-      timeout: 30000,
+      httpAgent: agent,
+      httpsAgent: agent,
+      timeout: 0, // إلغاء المهلة لمنع خطأ 30000ms exceeded أثناء بث الفيديو
       validateStatus: (s) => s >= 200 && s < 400
     });
 
@@ -127,7 +117,6 @@ async function handleStream(req, res) {
   }
 }
 
-// دعم مسار /play لطلبات GET و HEAD الخاصة بمشغلات الوسائط
 app.get('/play', handleStream);
 app.head('/play', handleStream);
 
