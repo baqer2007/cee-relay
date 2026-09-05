@@ -5,7 +5,6 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// إعداد وكيل SOCKS5 الموجه عبر نفق الهاتف
 function getAgent() {
   const host = process.env.PROXY_HOST;
   const port = process.env.PROXY_PORT;
@@ -18,7 +17,7 @@ function getAgent() {
   return null;
 }
 
-// 1. مسار فحص الاتصال بالـ IP العراقي
+// 1. مسار التحقق من الاتصال بالبروكسي وموقع الـ IP
 app.get('/check-ip', async (req, res) => {
   const agent = getAgent();
   try {
@@ -41,7 +40,7 @@ app.get('/check-ip', async (req, res) => {
   }
 });
 
-// 2. دالة جلب رابط الفيديو من واجهة برمجة تطبيقات cee.buzz تلقائياً
+// 2. دالة جلب رابط الفيديو المباشر من API منصة CEE
 async function fetchDirectVideoUrl(videoId, agent) {
   const apiUrl = `https://cee.buzz/video/api/${videoId}`;
 
@@ -59,9 +58,16 @@ async function fetchDirectVideoUrl(videoId, agent) {
     timeout: 20000
   });
 
-  const data = response.data;
-  let videosList = [];
+  let data = response.data;
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data);
+    } catch (e) {
+      console.warn('تنبيه: الاستجابة ليست JSON صالح');
+    }
+  }
 
+  let videosList = [];
   if (Array.isArray(data)) {
     videosList = data;
   } else if (data && Array.isArray(data.videos)) {
@@ -69,24 +75,28 @@ async function fetchDirectVideoUrl(videoId, agent) {
   }
 
   if (videosList.length > 0) {
-    // اختيار دقة مناسبة للبث السلس (720p أو 1080p أو أول جودة متوفرة)
+    // اختيار دقة متوفرة (ترتيب الأفضلية: 720p ثم 1080p ثم 480p ثم أول دقة)
     const selected = videosList.find(v => v.resolution === '720p') ||
                      videosList.find(v => v.resolution === '1080p') ||
+                     videosList.find(v => v.resolution === '480p') ||
                      videosList[0];
 
-    const target = selected.videoUrl || selected.url;
-    if (target) return target;
+    // استخراج رابط الفيديو (دعم الصيغ: videourl بحروف صغيرة، videoUrl، أو url)
+    const directUrl = selected.videourl || selected.videoUrl || selected.url;
+    if (directUrl) {
+      return directUrl;
+    }
   }
 
-  throw new Error('لم يتم العثور على روابط فيديو داخل استجابة CEE.');
+  throw new Error('لم يتم العثور على حقل videourl داخل استجابة CEE.');
 }
 
-// 3. المسار التلقائي الرئيسي: /play
+// 3. المسار الرئيسي التلقائي: /play
 app.get('/play', async (req, res) => {
   let videoId = req.query.id;
   const pageUrl = req.query.url;
 
-  // استخراج الـ id إذا أُرسل رابط صفحة cee بالكامل
+  // استخراج المعرف إذا تم تمرير الرابط الكامل لصفحة CEE
   if (!videoId && pageUrl) {
     const match = pageUrl.match(/(\d{6,})/);
     if (match) {
@@ -95,16 +105,16 @@ app.get('/play', async (req, res) => {
   }
 
   if (!videoId) {
-    return res.status(400).send('الرجاء إرسال id الفيديو أو رابط صفحة المشاهدة url.');
+    return res.status(400).send('الرجاء تزويد معرف الفيديو id أو رابط الصفحة url.');
   }
 
   const agent = getAgent();
 
   try {
-    // خطوة أ: سحب رابط الفيديو المباشر والتوقيع الفوري من CEE
+    // خطوة أ: استخراج رابط الفيديو المباشر الموقع فورياً
     const directVideoUrl = await fetchDirectVideoUrl(videoId, agent);
 
-    // خطوة ب: تمرير تدفق الفيديو إلى المتصفح / المشغل
+    // خطوة ب: تمرير تدفق الفيديو
     const streamHeaders = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'Referer': 'https://cee.buzz/',
@@ -126,8 +136,12 @@ app.get('/play', async (req, res) => {
       validateStatus: (status) => status >= 200 && status < 400
     });
 
-    if (videoStream.headers['content-range']) res.setHeader('Content-Range', videoStream.headers['content-range']);
-    if (videoStream.headers['content-length']) res.setHeader('Content-Length', videoStream.headers['content-length']);
+    if (videoStream.headers['content-range']) {
+      res.setHeader('Content-Range', videoStream.headers['content-range']);
+    }
+    if (videoStream.headers['content-length']) {
+      res.setHeader('Content-Length', videoStream.headers['content-length']);
+    }
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Content-Type', videoStream.headers['content-type'] || 'video/mp4');
     res.status(videoStream.status);
@@ -135,12 +149,12 @@ app.get('/play', async (req, res) => {
     videoStream.data.pipe(res);
 
     videoStream.data.on('error', (err) => {
-      console.error('انقطاع أثناء تدفق الفيديو:', err.message);
+      console.error('انقطاع في دفق الفيديو:', err.message);
       if (!res.headersSent) res.status(500).end();
     });
 
   } catch (err) {
-    console.error('فشل الجلب التلقائي من CEE:', err.message);
+    console.error('فشل جلب الفيديو التلقائي من CEE:', err.message);
     if (!res.headersSent) {
       res.status(500).json({
         status: 'error',
@@ -151,12 +165,14 @@ app.get('/play', async (req, res) => {
   }
 });
 
-// 4. المسار المباشر الاحتياطي
+// 4. مسار احتياطي لتمرير أي رابط يدوي مباشر: /stream
 app.get('/stream', async (req, res) => {
   const rawQuery = req.originalUrl.split('/stream?url=')[1];
   const targetUrl = rawQuery ? decodeURIComponent(rawQuery) : req.query.url;
 
-  if (!targetUrl) return res.status(400).send('رابط غير صالح');
+  if (!targetUrl) {
+    return res.status(400).send('رابط غير صالح');
+  }
 
   const agent = getAgent();
   try {
@@ -166,7 +182,9 @@ app.get('/stream', async (req, res) => {
       'Origin': 'https://cee.buzz'
     };
 
-    if (req.headers.range) headers['Range'] = req.headers.range;
+    if (req.headers.range) {
+      headers['Range'] = req.headers.range;
+    }
 
     const stream = await axios({
       method: 'get',
