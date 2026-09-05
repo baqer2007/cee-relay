@@ -5,6 +5,7 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// إعداد وكيل SOCKS5 المربوط بنفق Termux / Pinggy
 function getAgent() {
   const host = process.env.PROXY_HOST;
   const port = process.env.PROXY_PORT;
@@ -17,6 +18,7 @@ function getAgent() {
   return null;
 }
 
+// دالة مساعدة للبحث داخل الكائنات المعقدة لاستخراج المعرفات
 function findKeyDeep(obj, keyName) {
   if (!obj) return null;
   if (obj[keyName]) return obj[keyName];
@@ -59,7 +61,6 @@ async function fetchFullMediaDetails(inputParam, agent) {
 
     if (internalId) targetVideoId = internalId;
 
-    // استخراج الترجمات إن وجدت
     if (data && data.subtitles && Array.isArray(data.subtitles)) {
       subtitles = data.subtitles.map(s => ({
         lang: s.language || s.name || 'العربية',
@@ -87,7 +88,6 @@ async function fetchFullMediaDetails(inputParam, agent) {
     throw new Error('لم يتم العثور على ملفات فيديو.');
   }
 
-  // جمع الجودات المتاحة
   const qualities = list.map(item => ({
     resolution: item.resolution || 'Auto',
     url: item.videoUrl || item.videourl || item.url
@@ -100,7 +100,26 @@ async function fetchFullMediaDetails(inputParam, agent) {
   };
 }
 
-// 1. مسار وسيط لتمرير ملفات الترجمة لتعمل على آسياسيل
+// 1. مسار فحص الاتصال بالبروكسي وموقع الـ IP
+app.get('/check-ip', async (req, res) => {
+  const agent = getAgent();
+  try {
+    const config = agent ? { httpAgent: agent, httpsAgent: agent, timeout: 10000 } : { timeout: 10000 };
+    const response = await axios.get('http://ip-api.com/json', config);
+    res.json({
+      status: 'success',
+      proxy_used: agent ? `socks5://${process.env.PROXY_HOST}:${process.env.PROXY_PORT}` : 'none',
+      detected_country: response.data.countryCode,
+      detected_city: response.data.city,
+      detected_ip: response.data.query,
+      isp: response.data.isp
+    });
+  } catch (err) {
+    res.status(500).json({ status: 'failed', error: err.message });
+  }
+});
+
+// 2. مسار وسيط لتمرير ملفات الترجمة
 app.get('/api/sub-proxy', async (req, res) => {
   const subUrl = req.query.url;
   if (!subUrl) return res.status(400).send('رابط الترجمة مطلوب');
@@ -120,7 +139,7 @@ app.get('/api/sub-proxy', async (req, res) => {
   }
 });
 
-// 2. مسار جلب البث والجودات والترجمة للتطبيق
+// 3. المسار الرئيسي المخصص لتطبيق Flutter (يرجع JSON للجودات والترجمة)
 app.get('/api/get-stream', async (req, res) => {
   let id = req.query.id;
   const pageUrl = req.query.url;
@@ -130,16 +149,18 @@ app.get('/api/get-stream', async (req, res) => {
     if (match) id = match[1];
   }
 
-  if (!id) return res.status(400).json({ error: 'معرف الفيديو مطلوب' });
+  if (!id) {
+    return res.status(400).json({ status: 'error', message: 'معرف الفيديو مطلوب' });
+  }
 
   const agent = getAgent();
 
   try {
     const media = await fetchFullMediaDetails(id, agent);
     
-    // إعادة الروابط المجهزة للتطبيق مع توجيه الترجمة عبر السيرفر لتعمل على شبكة آسياسيل
     res.json({
       status: 'success',
+      video_id: id,
       video_url: media.defaultUrl,
       qualities: media.qualities,
       subtitles: media.subtitles.map(s => ({
@@ -148,8 +169,13 @@ app.get('/api/get-stream', async (req, res) => {
       }))
     });
   } catch (err) {
-    res.status(500).json({ status: 'error', message: err.message });
+    res.status(500).json({
+      status: 'error',
+      message: err.message
+    });
   }
 });
 
-app.listen(PORT, () => console.log(`Running on ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
