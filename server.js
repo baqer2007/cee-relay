@@ -5,23 +5,18 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// إعداد وكيل SOCKS5 مع خيارات الحفاظ على اتصال المقبس مفتوحاً لمنع ECONNRESET
 function getAgent() {
   const host = process.env.PROXY_HOST;
   const port = process.env.PROXY_PORT;
   if (host && port) {
     return new SocksProxyAgent(`socks5://${host}:${port}`, {
       keepAlive: true,
-      keepAliveMsecs: 1000,
-      maxSockets: 25,
-      maxFreeSockets: 10,
-      timeout: 60000
+      timeout: 30000
     });
   }
   return null;
 }
 
-// دالة إعادة محاولة سريعة وخفيفة
 async function axiosWithRetry(config, retries = 2, delay = 500) {
   for (let i = 0; i < retries; i++) {
     try {
@@ -33,7 +28,6 @@ async function axiosWithRetry(config, retries = 2, delay = 500) {
   }
 }
 
-// دالة سريعة لجلب روابط الفيديو مباشرة بدون طلبات إضافية تبطئ السيرفر
 async function fetchMediaDirectly(videoId, agent) {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -74,7 +68,6 @@ async function fetchMediaDirectly(videoId, agent) {
   };
 }
 
-// مسار فحص الـ IP
 app.get('/check-ip', async (req, res) => {
   const agent = getAgent();
   try {
@@ -91,46 +84,6 @@ app.get('/check-ip', async (req, res) => {
   }
 });
 
-// مسار تدفق الفيديو السريع
-app.get('/api/stream-proxy', async (req, res) => {
-  const targetUrl = req.query.url;
-  if (!targetUrl) return res.status(400).send('رابط الفيديو مطلوب');
-
-  const agent = getAgent();
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-    'Referer': 'https://cee.buzz/',
-    'Origin': 'https://cee.buzz'
-  };
-
-  if (req.headers.range) {
-    headers['Range'] = req.headers.range;
-  }
-
-  try {
-    const response = await axiosWithRetry({
-      url: targetUrl,
-      method: 'get',
-      headers,
-      httpAgent: agent,
-      httpsAgent: agent,
-      responseType: 'stream',
-      timeout: 30000
-    }, 2, 500);
-
-    Object.keys(response.headers).forEach(key => {
-      res.setHeader(key, response.headers[key]);
-    });
-    res.status(response.status);
-    response.data.pipe(res);
-  } catch (err) {
-    if (!res.headersSent) {
-      res.status(500).send('فشل تشغيل تدفق البروكسي');
-    }
-  }
-});
-
-// المسار الرئيسي لتطبيق Flutter
 app.get('/api/get-stream', async (req, res) => {
   let id = req.query.id;
   const pageUrl = req.query.url;
@@ -152,10 +105,10 @@ app.get('/api/get-stream', async (req, res) => {
     res.json({
       status: 'success',
       video_id: id,
-      video_url: `https://${req.get('host')}/api/stream-proxy?url=${encodeURIComponent(media.defaultUrl)}`,
+      video_url: media.defaultUrl,
       qualities: media.qualities.map(q => ({
         resolution: q.resolution,
-        url: `https://${req.get('host')}/api/stream-proxy?url=${encodeURIComponent(q.url)}`
+        url: q.url
       })),
       subtitles: []
     });
