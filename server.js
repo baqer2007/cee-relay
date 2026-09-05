@@ -11,28 +11,26 @@ function getAgent() {
   if (host && port) {
     return new SocksProxyAgent(`socks5://${host}:${port}`, {
       keepAlive: true,
-      timeout: 120000
+      timeout: 30000
     });
   }
   return null;
 }
 
-// 1. استخراج رابط الفيديو من CEE عبر البروكسي
-async function fetchDirectVideoUrl(videoId, agent) {
+// دالة سحب الرابط من CEE
+async function getCeeVideo(videoId, agent) {
   const apiUrl = `https://cee.buzz/api/android/transcoddedFiles/id/${videoId}`;
-
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
     'Referer': `https://cee.buzz/video/en/${videoId}?show=true`,
-    'Origin': 'https://cee.buzz',
-    'Accept': 'application/json, text/plain, */*'
+    'Origin': 'https://cee.buzz'
   };
 
   const response = await axios.get(apiUrl, {
-    headers: headers,
+    headers,
     httpAgent: agent,
     httpsAgent: agent,
-    timeout: 20000
+    timeout: 15000
   });
 
   let data = response.data;
@@ -42,82 +40,46 @@ async function fetchDirectVideoUrl(videoId, agent) {
 
   const list = Array.isArray(data) ? data : (data && data.videos ? data.videos : []);
   if (list.length > 0) {
-    // اختيار الجودة المناسبة (480p أو 720p أو 360p لتفادي بطء التحميل)
-    const selected = list.find(v => v.resolution === '480p') ||
-                     list.find(v => v.resolution === '720p') ||
-                     list.find(v => v.resolution === '360p') ||
+    const selected = list.find(v => v.resolution === '720p') ||
+                     list.find(v => v.resolution === '480p') ||
                      list[0];
-
     return selected.videoUrl || selected.videourl || selected.url;
   }
   throw new Error('لم يتم العثور على رابط فيديو في الاستجابة.');
 }
 
-// 2. دالة تدفق الفيديو عبر البروكسي العراقي بدون timeout
-async function handleStream(req, res) {
-  let videoId = req.query.id;
-  const pageUrl = req.query.url;
-
-  if (!videoId && pageUrl) {
-    const match = pageUrl.match(/(\d{6,8})/);
-    if (match) videoId = match[1];
-  }
-
-  if (!videoId) return res.status(400).send('معرف الفيديو مطلوب');
-
+// مسار المشاهدة مع مشغل HTML5 كامل
+app.get('/play', async (req, res) => {
+  let videoId = req.query.id || '3130508';
   const agent = getAgent();
 
   try {
-    const targetVideoUrl = await fetchDirectVideoUrl(videoId, agent);
+    const videoUrl = await getCeeVideo(videoId, agent);
 
-    const cdnHeaders = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-      'Referer': 'https://cee.buzz/',
-      'Origin': 'https://cee.buzz'
-    };
-
-    if (req.headers.range) {
-      cdnHeaders['Range'] = req.headers.range;
-    }
-
-    // جلب الفيديو عبر البروكسي العراقي لفك الحظر الجغرافي
-    const response = await axios({
-      method: 'get',
-      url: targetVideoUrl,
-      responseType: 'stream',
-      headers: cdnHeaders,
-      httpAgent: agent,
-      httpsAgent: agent,
-      timeout: 0, // إلغاء المهلة لمنع خطأ 30000ms exceeded أثناء بث الفيديو
-      validateStatus: (s) => s >= 200 && s < 400
-    });
-
-    if (response.headers['content-range']) {
-      res.setHeader('Content-Range', response.headers['content-range']);
-    }
-    if (response.headers['content-length']) {
-      res.setHeader('Content-Length', response.headers['content-length']);
-    }
-
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Content-Type', response.headers['content-type'] || 'video/mp4');
-    res.setHeader('Content-Disposition', 'inline; filename="video.mp4"');
-    res.status(response.status);
-
-    response.data.pipe(res);
-
-    response.data.on('error', () => {
-      if (!res.headersSent) res.status(500).end();
-    });
-
+    // صفحة عرض مدمجة تتجاوز أمر التحميل التلقائي وتشغل الفيديو فوراً
+    res.send(`
+      <!DOCTYPE html>
+      <html lang="ar" dir="rtl">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>مشغل CEE</title>
+        <style>
+          body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; display: flex; justify-content: center; align-items: center; }
+          video { width: 100%; height: 100%; max-height: 100vh; }
+        </style>
+      </head>
+      <body>
+        <video controls autoplay playsinline>
+          <source src="${videoUrl}" type="video/mp4">
+          متصفحك لا يدعم تشغيل هذا الفيديو.
+        </video>
+      </body>
+      </html>
+    `);
   } catch (err) {
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'تعذر تشغيل الفيديو', details: err.message });
-    }
+    res.status(500).send(`<h3>خطأ في الاتصال بالبروكسي أو السيرفر: ${err.message}</h3><p>تأكد من أن نفق Pinggy في Termux لا يزال نشطاً.</p>`);
   }
-}
-
-app.get('/play', handleStream);
-app.head('/play', handleStream);
+});
 
 app.listen(PORT, () => console.log(`Running on ${PORT}`));
