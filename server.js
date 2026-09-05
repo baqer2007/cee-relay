@@ -1,11 +1,11 @@
 const express = require('express');
 const axios = require('axios');
-const { HttpsProxyAgent } = require('https-proxy-agent'); // مخصص لبروكسيات HTTP/HTTPS السريعة
+const { SocksProxyAgent } = require('socks-proxy-agent');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// أقوى وأسرع البروكسيات المستخرجة من الملف المرفق
+// أقوى وأسرع البروكسيات العراقية من الملف المرفق
 const proxyList = [
   'http://109.224.22.36:51372',
   'http://185.122.252.42:8080',
@@ -18,17 +18,16 @@ const proxyList = [
 
 let currentProxyIndex = 0;
 
-// دالة لجلب البروكسي الحالي
 function getCurrentAgent() {
   if (proxyList.length === 0) return null;
   const proxyUrl = proxyList[currentProxyIndex];
-  return new HttpsProxyAgent(proxyUrl);
+  // استخدام socks-proxy-agent لدعم الاتصال
+  return new SocksProxyAgent(proxyUrl);
 }
 
-// دالة لتغيير البروكسي إلى التالي في حال فشل الحالي
 function rotateProxy() {
   currentProxyIndex = (currentProxyIndex + 1) % proxyList.length;
-  console.log(`[Proxy Rotate] تم الانتقال إلى البروكسي رقم ${currentProxyIndex}: ${proxyList[currentProxyIndex]}`);
+  console.log(`[Proxy Rotate] الانتقال للبروكسي التالي: ${proxyList[currentProxyIndex]}`);
 }
 
 app.get('/api/get-stream', async (req, res) => {
@@ -41,7 +40,6 @@ app.get('/api/get-stream', async (req, res) => {
 
   const filesApi = `https://cee.buzz/api/android/transcoddedFiles/id/${id}`;
 
-  // محاولة الاتصال مع تدوير البروكسيات تلقائياً في حال فشل أو انقضاء المهلة
   let attempts = 0;
   let success = false;
   let response;
@@ -56,19 +54,19 @@ app.get('/api/get-stream', async (req, res) => {
         },
         httpAgent: agent, 
         httpsAgent: agent, 
-        timeout: 6000 // مهلة 6 ثوانٍ لكل محاولة لتكون سريعة
+        timeout: 5000 
       });
       if (response.status === 200) {
         success = true;
       }
     } catch (err) {
       attempts++;
-      rotateProxy(); // تجربة البروكسي التالي
+      rotateProxy();
     }
   }
 
   if (!success) {
-    return res.status(500).json({ status: 'error', message: 'تعذر الاتصال عبر جميع البروكسيات المتاحة.' });
+    return res.status(500).json({ status: 'error', message: 'تعذر الاتصال عبر البروكسيات المتاحة حالياً.' });
   }
 
   try {
