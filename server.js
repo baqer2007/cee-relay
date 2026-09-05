@@ -11,16 +11,15 @@ function getAgent() {
   if (host && port) {
     return new SocksProxyAgent(`socks5://${host}:${port}`, {
       keepAlive: true,
-      timeout: 60000
+      timeout: 30000
     });
   }
   return null;
 }
 
-// دالة جلب رابط الفيديو من واجهة CEE عبر البروكسي
+// دالة جلب رابط الفيديو من واجهة المنصة عبر البروكسي
 async function fetchDirectVideoUrl(videoId, agent) {
   const apiUrl = `https://cee.buzz/api/android/transcoddedFiles/id/${videoId}`;
-
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
     'Referer': `https://cee.buzz/video/en/${videoId}?show=true`,
@@ -28,7 +27,7 @@ async function fetchDirectVideoUrl(videoId, agent) {
   };
 
   const response = await axios.get(apiUrl, {
-    headers: headers,
+    headers,
     httpAgent: agent,
     httpsAgent: agent,
     timeout: 15000
@@ -39,7 +38,7 @@ async function fetchDirectVideoUrl(videoId, agent) {
     try { data = JSON.parse(data); } catch (e) {}
   }
 
-  let list = Array.isArray(data) ? data : (data && data.videos ? data.videos : []);
+  const list = Array.isArray(data) ? data : (data && data.videos ? data.videos : []);
   if (list.length > 0) {
     const selected = list.find(v => v.resolution === '720p') ||
                      list.find(v => v.resolution === '1080p') ||
@@ -51,8 +50,8 @@ async function fetchDirectVideoUrl(videoId, agent) {
   throw new Error('لم يتم العثور على رابط فيديو في الاستجابة.');
 }
 
-// مسار المشاهدة المباشر للبث
-app.get('/play', async (req, res) => {
+// دالة التعامل مع بث الفيديو لمشغلات الميديا (تدعم GET و HEAD)
+async function handleStream(req, res) {
   let videoId = req.query.id;
   const pageUrl = req.query.url;
 
@@ -66,10 +65,10 @@ app.get('/play', async (req, res) => {
   const agent = getAgent();
 
   try {
-    // 1. استخراج الرابط الحقيقي
+    // 1. جلب الرابط من API عبر البروكسي
     const targetVideoUrl = await fetchDirectVideoUrl(videoId, agent);
 
-    // 2. إعداد ترويسات المشغل والتأكد من دعم التقديم والترجيع
+    // 2. إعداد الترويسات لجلب الفيديو من سيرفرات CDN
     const cdnHeaders = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
       'Referer': 'https://cee.buzz/',
@@ -80,18 +79,29 @@ app.get('/play', async (req, res) => {
       cdnHeaders['Range'] = req.headers.range;
     }
 
+    // إذا كان الطلب HEAD من VLC للتأكد من الملف فقط
+    if (req.method === 'HEAD') {
+      const headRes = await axios.head(targetVideoUrl, {
+        headers: cdnHeaders,
+        timeout: 15000,
+        validateStatus: (s) => s >= 200 && s < 400
+      });
+      res.set(headRes.headers);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Type', 'video/mp4');
+      return res.status(headRes.status).end();
+    }
+
+    // طلب تدفق الفيديو الفعلي
     const response = await axios({
       method: 'get',
       url: targetVideoUrl,
       responseType: 'stream',
       headers: cdnHeaders,
-      httpAgent: agent,
-      httpsAgent: agent,
       timeout: 30000,
       validateStatus: (s) => s >= 200 && s < 400
     });
 
-    // تمرير ترويسات الفيديو وإلغاء أمر التنزيل التلقائي
     if (response.headers['content-range']) {
       res.setHeader('Content-Range', response.headers['content-range']);
     }
@@ -100,8 +110,7 @@ app.get('/play', async (req, res) => {
     }
 
     res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Content-Type', 'video/mp4');
-    // إجبار المتصفح وVLC على التشغيل بدلاً من التنزيل
+    res.setHeader('Content-Type', response.headers['content-type'] || 'video/mp4');
     res.setHeader('Content-Disposition', 'inline; filename="video.mp4"');
     res.status(response.status);
 
@@ -116,6 +125,10 @@ app.get('/play', async (req, res) => {
       res.status(500).json({ error: 'تعذر تشغيل الفيديو', details: err.message });
     }
   }
-});
+}
+
+// دعم مسار /play لطلبات GET و HEAD الخاصة بمشغلات الوسائط
+app.get('/play', handleStream);
+app.head('/play', handleStream);
 
 app.listen(PORT, () => console.log(`Running on ${PORT}`));
