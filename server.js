@@ -139,7 +139,44 @@ app.get('/api/sub-proxy', async (req, res) => {
   }
 });
 
-// 3. المسار الرئيسي المخصص لتطبيق Flutter (يرجع JSON للجودات والترجمة)
+// 3. مسار بروكسي تدفق الفيديو (يتولى سحب وبث أجزاء الفيديو عبر السيرفر لتفادي الحظر أو اختلاف الصلاحيات)
+app.get('/api/stream-proxy', async (req, res) => {
+  const targetUrl = req.query.url;
+  if (!targetUrl) return res.status(400).send('رابط الفيديو مطلوب');
+
+  const agent = getAgent();
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    'Referer': 'https://cee.buzz/',
+    'Origin': 'https://cee.buzz'
+  };
+
+  if (req.headers.range) {
+    headers['Range'] = req.headers.range;
+  }
+
+  try {
+    const response = await axios.get(targetUrl, {
+      headers,
+      httpAgent: agent,
+      httpsAgent: agent,
+      responseType: 'stream',
+      timeout: 30000
+    });
+
+    Object.keys(response.headers).forEach(key => {
+      res.setHeader(key, response.headers[key]);
+    });
+    res.status(response.status);
+    response.data.pipe(res);
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(500).send('فشل تشغيل تدفق البروكسي');
+    }
+  }
+});
+
+// 4. المسار الرئيسي لتطبيق Flutter (يمرر الروابط عبر البروكسي الداخلي)
 app.get('/api/get-stream', async (req, res) => {
   let id = req.query.id;
   const pageUrl = req.query.url;
@@ -161,8 +198,11 @@ app.get('/api/get-stream', async (req, res) => {
     res.json({
       status: 'success',
       video_id: id,
-      video_url: media.defaultUrl,
-      qualities: media.qualities,
+      video_url: `https://${req.get('host')}/api/stream-proxy?url=${encodeURIComponent(media.defaultUrl)}`,
+      qualities: media.qualities.map(q => ({
+        resolution: q.resolution,
+        url: `https://${req.get('host')}/api/stream-proxy?url=${encodeURIComponent(q.url)}`
+      })),
       subtitles: media.subtitles.map(s => ({
         lang: s.lang,
         url: `https://${req.get('host')}/api/sub-proxy?url=${encodeURIComponent(s.url)}`
