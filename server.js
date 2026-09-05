@@ -1,126 +1,117 @@
 const express = require('express');
 const axios = require('axios');
-const cors = require('cors');
 const { SocksProxyAgent } = require('socks-proxy-agent');
-require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
-// تفعيل CORS لتمكين أي تطبيق موبايل أو متصفح من تشغيل الفيديو دون حظر
-app.use(cors({
-    origin: '*',
-    methods: ['GET', 'HEAD', 'OPTIONS'],
-    allowedHeaders: ['Range', 'Authorization', 'Content-Type', 'Accept']
-}));
+// إعداد وكيل SOCKS5 إذا تم تمرير المتغيرات
+function getAgent() {
+  const host = process.env.PROXY_HOST;
+  const port = process.env.PROXY_PORT;
+  if (host && port) {
+    return new SocksProxyAgent(`socks5://${host}:${port}`);
+  }
+  return null;
+}
 
-// إعداد البروكسي (يقرأ من متغيرات البيئة أو القيم الافتراضية للتجربة)
-const PROXY_HOST = process.env.PROXY_HOST || 't.pinggy.io';
-const PROXY_PORT = process.env.PROXY_PORT || '1080';
-const SOCKS_URL = `socks5://${PROXY_HOST}:${PROXY_PORT}`;
-const agent = new SocksProxyAgent(SOCKS_URL);
-
-// 1. مسار الصفحة الرئيسية للتحقق من عمل السيرفر
-app.get('/', (req, res) => {
-    res.send('🚀 سيرفر تمرير بث CEE يعمل بنجاح على Render!');
-});
-
-// 2. مسار فحص صحة البروكسي وهوية الـ IP
+// 1. مسار فحص الـ IP والبلد
 app.get('/check-ip', async (req, res) => {
-    try {
-        const response = await axios.get('https://ipinfo.io/json', {
-            httpAgent: agent,
-            httpsAgent: agent,
-            timeout: 8000
-        });
-        res.json({
-            status: 'success',
-            proxy_used: SOCKS_URL,
-            detected_country: response.data.country,
-            detected_city: response.data.city,
-            detected_ip: response.data.ip,
-            isp: response.data.org
-        });
-    } catch (error) {
-        res.status(500).json({
-            status: 'failed',
-            error: 'تعذر الاتصال بالبروكسي: ' + error.message,
-            proxy: SOCKS_URL
-        });
-    }
+  const agent = getAgent();
+  try {
+    const config = agent ? { httpAgent: agent, httpsAgent: agent, timeout: 10000 } : { timeout: 10000 };
+    const response = await axios.get('http://ip-api.com/json', config);
+    res.json({
+      status: 'success',
+      proxy_used: agent ? `socks5://${process.env.PROXY_HOST}:${process.env.PROXY_PORT}` : 'none',
+      detected_country: response.data.countryCode,
+      detected_city: response.data.city,
+      detected_ip: response.data.query,
+      isp: response.data.isp
+    });
+  } catch (err) {
+    res.status(500).json({
+      status: 'failed',
+      error: `تعذر الاتصال بالبروكسي: ${err.message}`,
+      proxy: agent ? `socks5://${process.env.PROXY_HOST}:${process.env.PROXY_PORT}` : 'none'
+    });
+  }
 });
 
-// 3. مسار بث وتمرير الفيديو الرئيسي (Stream Relay Endpoint)
-// طريقة الاستخدام: /stream?url=ENCODED_VIDEO_URL
+// 2. مسار بث الفيديو وتمريره تلقائياً مع ترويسات المشغل
 app.get('/stream', async (req, res) => {
-    const videoUrl = req.query.url;
+  let targetUrl = req.query.url;
 
-    if (!videoUrl) {
-        return res.status(400).send('خطأ: يرجى تضمين رابط الفيديو عبر المعامل ?url=');
-    }
+  if (!targetUrl) {
+    return res.status(400).send('الرجاء تزويد رابط الفيديو عبر المعامل url');
+  }
 
-    // تجهيز ترويسات الطلب وخاصة Range لدعم التقديم والترجيع
+  // في حال تم تمرير الرابط بعد علامة الاستفهام دون ترميز
+  const rawQuery = req.originalUrl.split('/stream?url=')[1];
+  if (rawQuery) {
+    targetUrl = rawQuery;
+  }
+
+  const agent = getAgent();
+
+  try {
     const headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://cee.buzz/'
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Referer': 'https://cee.buzz/',
+      'Origin': 'https://cee.buzz'
     };
 
+    // تمرير ترويسة Range لتشغيل الفيديو والتقديم والتأخير
     if (req.headers.range) {
-        headers['Range'] = req.headers.range;
+      headers['Range'] = req.headers.range;
     }
 
-    try {
-        const upstreamResponse = await axios({
-            method: 'GET',
-            url: videoUrl,
-            httpAgent: agent,
-            httpsAgent: agent,
-            headers: headers,
-            responseType: 'stream',
-            timeout: 20000,
-            validateStatus: (status) => status >= 200 && status < 400
-        });
+    const response = await axios({
+      method: 'get',
+      url: targetUrl,
+      responseType: 'stream',
+      headers: headers,
+      httpAgent: agent,
+      httpsAgent: agent,
+      timeout: 30000,
+      validateStatus: (status) => status >= 200 && status < 400
+    });
 
-        // تمرير ترويسات الفيديو إلى العميل (الموبايل / المتصفح)
-        const forwardHeaders = [
-            'content-type',
-            'content-length',
-            'content-range',
-            'accept-ranges',
-            'last-modified',
-            'etag'
-        ];
-
-        forwardHeaders.forEach((headerName) => {
-            if (upstreamResponse.headers[headerName]) {
-                res.setHeader(headerName, upstreamResponse.headers[headerName]);
-            }
-        });
-
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.status(upstreamResponse.status);
-
-        // ربط تدفق الفيديو مباشرة نحو العميل
-        upstreamResponse.data.pipe(res);
-
-        upstreamResponse.data.on('error', (streamErr) => {
-            console.error('خطأ أثناء تدفق البيانات:', streamErr.message);
-            if (!res.headersSent) {
-                res.status(500).end();
-            }
-        });
-
-    } catch (err) {
-        console.error('خطأ في سحب رابط الفيديو:', err.message);
-        if (!res.headersSent) {
-            res.status(502).json({
-                error: 'فشل تمرير الفيديو عبر البروكسي',
-                details: err.message
-            });
-        }
+    // تمرير ترويسات الاستجابة إلى المتصفح أو المشغل
+    if (response.headers['content-range']) {
+      res.setHeader('Content-Range', response.headers['content-range']);
     }
+    if (response.headers['content-length']) {
+      res.setHeader('Content-Length', response.headers['content-length']);
+    }
+    if (response.headers['accept-ranges']) {
+      res.setHeader('Accept-Ranges', response.headers['accept-ranges']);
+    } else {
+      res.setHeader('Accept-Ranges', 'bytes');
+    }
+
+    res.setHeader('Content-Type', response.headers['content-type'] || 'video/mp4');
+    res.status(response.status);
+
+    response.data.pipe(res);
+
+    response.data.on('error', (streamErr) => {
+      console.error('خطأ أثناء تدفق البيانات:', streamErr.message);
+      if (!res.headersSent) res.status(500).end();
+    });
+
+  } catch (err) {
+    console.error('خطأ في سحب رابط الفيديو:', err.message);
+    if (!res.headersSent) {
+      res.status(500).json({
+        status: 'error',
+        message: 'تعذر جلب ملف الفيديو من السيرفر المصدر',
+        details: err.message
+      });
+    }
+  }
 });
 
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
