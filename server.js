@@ -5,11 +5,13 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// إعداد وكيل SOCKS5 مع تنظيف الهوست تلقائياً لمنع أي أخطاء في العنونة
 function getAgent() {
   const host = process.env.PROXY_HOST;
   const port = process.env.PROXY_PORT;
   if (host && port) {
-    return new SocksProxyAgent(`socks5://${host}:${port}`, {
+    const cleanHost = host.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    return new SocksProxyAgent(`socks5://${cleanHost}:${port}`, {
       keepAlive: true,
       timeout: 30000
     });
@@ -17,6 +19,7 @@ function getAgent() {
   return null;
 }
 
+// دالة إعادة محاولة سريعة وخفيفة
 async function axiosWithRetry(config, retries = 2, delay = 500) {
   for (let i = 0; i < retries; i++) {
     try {
@@ -28,6 +31,7 @@ async function axiosWithRetry(config, retries = 2, delay = 500) {
   }
 }
 
+// دالة جلب روابط الفيديو من المنصة عبر البروكسي العراقي
 async function fetchMediaDirectly(videoId, agent) {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -68,6 +72,7 @@ async function fetchMediaDirectly(videoId, agent) {
   };
 }
 
+// مسار فحص الاتصال والـ IP
 app.get('/check-ip', async (req, res) => {
   const agent = getAgent();
   try {
@@ -84,6 +89,7 @@ app.get('/check-ip', async (req, res) => {
   }
 });
 
+// المسار الرئيسي لجلب الروابط وتمريرها للتطبيق لتشغيلها بسرعته الخاصة
 app.get('/api/get-stream', async (req, res) => {
   let id = req.query.id;
   const pageUrl = req.query.url;
