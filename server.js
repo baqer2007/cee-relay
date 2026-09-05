@@ -6,15 +6,15 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 function getAgent() {
-  const host = process.env.PROXY_HOST;
-  const port = process.env.PROXY_PORT;
-  if (host && port) {
-    const cleanHost = host.replace(/^https?:\/\//, '').replace(/\/$/, '');
-    // تمرير الهوست والمنفذ مباشرة بشكل صريح لتفادي مشاكل التحليل
-    return new SocksProxyAgent({
-      hostname: cleanHost,
-      port: parseInt(port)
-    });
+  try {
+    const host = process.env.PROXY_HOST;
+    const port = process.env.PROXY_PORT;
+    if (host && port) {
+      const cleanHost = host.replace(/^https?:\/\//, '').replace(/\/$/, '');
+      return new SocksProxyAgent(`socks5://${cleanHost}:${port}`);
+    }
+  } catch (e) {
+    console.error('Proxy Agent Error:', e.message);
   }
   return null;
 }
@@ -32,9 +32,8 @@ app.get('/api/get-stream', async (req, res) => {
     return res.status(400).json({ status: 'error', message: 'معرف الفيديو مطلوب' });
   }
 
-  const agent = getAgent();
-
   try {
+    const agent = getAgent();
     const filesApi = `https://cee.buzz/api/android/transcoddedFiles/id/${id}`;
     
     const response = await axios.get(filesApi, {
@@ -46,7 +45,7 @@ app.get('/api/get-stream', async (req, res) => {
       },
       httpAgent: agent,
       httpsAgent: agent,
-      timeout: 30000
+      timeout: 25000
     });
 
     let filesData = response.data;
@@ -56,7 +55,7 @@ app.get('/api/get-stream', async (req, res) => {
 
     const list = Array.isArray(filesData) ? filesData : (filesData && filesData.videos ? filesData.videos : []);
     if (!list.length) {
-      throw new Error('لم يتم العثور على ملفات فيديو.');
+      return res.status(404).json({ status: 'error', message: 'لم يتم العثور على ملفات فيديو.' });
     }
 
     const qualities = list.map(item => ({
@@ -75,9 +74,10 @@ app.get('/api/get-stream', async (req, res) => {
     });
 
   } catch (err) {
+    console.error('API Error:', err.message);
     res.status(500).json({
       status: 'error',
-      message: err.message
+      message: `خطأ في الاتصال: ${err.message}`
     });
   }
 });
